@@ -1,5 +1,5 @@
 kind: pipeline
-name: Phoenix Project
+name: Phoenix Kernel
 
 clone:
   depth: 1
