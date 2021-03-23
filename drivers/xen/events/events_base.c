@@ -99,7 +99,6 @@ static DEFINE_RWLOCK(evtchn_rwlock);
  *   evtchn_rwlock
  *     IRQ-desc lock
  *       percpu eoi_list_lock
- *         irq_info->lock
  */
 
 static LIST_HEAD(xen_irq_list_head);
@@ -221,8 +220,6 @@ static int xen_irq_info_common_setup(struct irq_info *info,
 	info->irq = irq;
 	info->evtchn = evtchn;
 	info->cpu = cpu;
-	info->mask_reason = EVT_MASK_REASON_EXPLICIT;
-	spin_lock_init(&info->lock);
 
 	ret = set_evtchn_to_irq(evtchn, irq);
 	if (ret < 0)
@@ -289,7 +286,6 @@ static int xen_irq_info_pirq_setup(unsigned irq,
 static void xen_irq_info_cleanup(struct irq_info *info)
 {
 	set_evtchn_to_irq(info->evtchn, -1);
-	xen_evtchn_port_remove(info->evtchn, info->cpu);
 	info->evtchn = 0;
 }
 
@@ -368,34 +364,6 @@ unsigned int cpu_from_evtchn(unsigned int evtchn)
 		ret = cpu_from_irq(irq);
 
 	return ret;
-}
-
-static void do_mask(struct irq_info *info, u8 reason)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&info->lock, flags);
-
-	if (!info->mask_reason)
-		mask_evtchn(info->evtchn);
-
-	info->mask_reason |= reason;
-
-	spin_unlock_irqrestore(&info->lock, flags);
-}
-
-static void do_unmask(struct irq_info *info, u8 reason)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&info->lock, flags);
-
-	info->mask_reason &= ~reason;
-
-	if (!info->mask_reason)
-		unmask_evtchn(info->evtchn);
-
-	spin_unlock_irqrestore(&info->lock, flags);
 }
 
 #ifdef CONFIG_X86
@@ -533,7 +501,7 @@ static void xen_irq_lateeoi_locked(struct irq_info *info, bool spurious)
 	}
 
 	info->eoi_time = 0;
-	do_unmask(info, EVT_MASK_REASON_EOI_PENDING);
+	unmask_evtchn(evtchn);
 }
 
 static void xen_irq_lateeoi_worker(struct work_struct *work)
@@ -702,12 +670,6 @@ static void xen_evtchn_close(unsigned int port)
 		BUG();
 }
 
-static void event_handler_exit(struct irq_info *info)
-{
-	smp_store_release(&info->is_active, 0);
-	clear_evtchn(info->evtchn);
-}
-
 static void pirq_query_unmask(int irq)
 {
 	struct physdev_irq_status_query irq_status;
@@ -726,8 +688,7 @@ static void pirq_query_unmask(int irq)
 
 static void eoi_pirq(struct irq_data *data)
 {
-	struct irq_info *info = info_for_irq(data->irq);
-	int evtchn = info ? info->evtchn : 0;
+	int evtchn = evtchn_from_irq(data->irq);
 	struct physdev_eoi eoi = { .irq = pirq_from_irq(data->irq) };
 	int rc = 0;
 
@@ -736,15 +697,16 @@ static void eoi_pirq(struct irq_data *data)
 
 	if (unlikely(irqd_is_setaffinity_pending(data)) &&
 	    likely(!irqd_irq_disabled(data))) {
-		do_mask(info, EVT_MASK_REASON_TEMPORARY);
+		int masked = test_and_set_mask(evtchn);
 
-		event_handler_exit(info);
+		clear_evtchn(evtchn);
 
 		irq_move_masked_irq(data);
 
-		do_unmask(info, EVT_MASK_REASON_TEMPORARY);
+		if (!masked)
+			unmask_evtchn(evtchn);
 	} else
-		event_handler_exit(info);
+		clear_evtchn(evtchn);
 
 	if (pirq_needs_eoi(data->irq)) {
 		rc = HYPERVISOR_physdev_op(PHYSDEVOP_eoi, &eoi);
@@ -795,8 +757,7 @@ static unsigned int __startup_pirq(unsigned int irq)
 		goto err;
 
 out:
-	do_unmask(info, EVT_MASK_REASON_EXPLICIT);
-
+	unmask_evtchn(evtchn);
 	eoi_pirq(irq_get_irq_data(irq));
 
 	return 0;
@@ -823,7 +784,7 @@ static void shutdown_pirq(struct irq_data *data)
 	if (!VALID_EVTCHN(evtchn))
 		return;
 
-	do_mask(info, EVT_MASK_REASON_EXPLICIT);
+	mask_evtchn(evtchn);
 	xen_evtchn_close(evtchn);
 	xen_irq_info_cleanup(info);
 }
@@ -1579,8 +1540,6 @@ void handle_irq_for_port(evtchn_port_t port, struct evtchn_loop_ctrl *ctrl)
 	}
 
 	info = info_for_irq(irq);
-	if (xchg_acquire(&info->is_active, 1))
-		return;
 
 	if (ctrl->defer_eoi) {
 		info->eoi_cpu = smp_processor_id();
@@ -1687,8 +1646,8 @@ void rebind_evtchn_irq(int evtchn, int irq)
 static int rebind_irq_to_cpu(unsigned irq, unsigned tcpu)
 {
 	struct evtchn_bind_vcpu bind_vcpu;
-	struct irq_info *info = info_for_irq(irq);
-	int evtchn = info ? info->evtchn : 0;
+	int evtchn = evtchn_from_irq(irq);
+	int masked;
 
 	if (!VALID_EVTCHN(evtchn))
 		return -1;
@@ -1704,7 +1663,7 @@ static int rebind_irq_to_cpu(unsigned irq, unsigned tcpu)
 	 * Mask the event while changing the VCPU binding to prevent
 	 * it being delivered on an unexpected VCPU.
 	 */
-	do_mask(info, EVT_MASK_REASON_TEMPORARY);
+	masked = test_and_set_mask(evtchn);
 
 	/*
 	 * If this fails, it usually just indicates that we're dealing with a
@@ -1714,7 +1673,8 @@ static int rebind_irq_to_cpu(unsigned irq, unsigned tcpu)
 	if (HYPERVISOR_event_channel_op(EVTCHNOP_bind_vcpu, &bind_vcpu) >= 0)
 		bind_evtchn_to_cpu(evtchn, tcpu);
 
-	do_unmask(info, EVT_MASK_REASON_TEMPORARY);
+	if (!masked)
+		unmask_evtchn(evtchn);
 
 	return 0;
 }
@@ -1729,41 +1689,39 @@ static int set_affinity_irq(struct irq_data *data, const struct cpumask *dest,
 
 static void enable_dynirq(struct irq_data *data)
 {
-	struct irq_info *info = info_for_irq(data->irq);
-	evtchn_port_t evtchn = info ? info->evtchn : 0;
+	int evtchn = evtchn_from_irq(data->irq);
 
 	if (VALID_EVTCHN(evtchn))
-		do_unmask(info, EVT_MASK_REASON_EXPLICIT);
+		unmask_evtchn(evtchn);
 }
 
 static void disable_dynirq(struct irq_data *data)
 {
-	struct irq_info *info = info_for_irq(data->irq);
-	evtchn_port_t evtchn = info ? info->evtchn : 0;
+	int evtchn = evtchn_from_irq(data->irq);
 
 	if (VALID_EVTCHN(evtchn))
-		do_mask(info, EVT_MASK_REASON_EXPLICIT);
+		mask_evtchn(evtchn);
 }
 
 static void ack_dynirq(struct irq_data *data)
 {
-	struct irq_info *info = info_for_irq(data->irq);
-	evtchn_port_t evtchn = info ? info->evtchn : 0;
+	int evtchn = evtchn_from_irq(data->irq);
 
 	if (!VALID_EVTCHN(evtchn))
 		return;
 
 	if (unlikely(irqd_is_setaffinity_pending(data)) &&
 	    likely(!irqd_irq_disabled(data))) {
-		do_mask(info, EVT_MASK_REASON_TEMPORARY);
+		int masked = test_and_set_mask(evtchn);
 
-		event_handler_exit(info);
+		clear_evtchn(evtchn);
 
 		irq_move_masked_irq(data);
 
-		do_unmask(info, EVT_MASK_REASON_TEMPORARY);
+		if (!masked)
+			unmask_evtchn(evtchn);
 	} else
-		event_handler_exit(info);
+		clear_evtchn(evtchn);
 }
 
 static void mask_ack_dynirq(struct irq_data *data)
@@ -1772,39 +1730,18 @@ static void mask_ack_dynirq(struct irq_data *data)
 	ack_dynirq(data);
 }
 
-static void lateeoi_ack_dynirq(struct irq_data *data)
-{
-	struct irq_info *info = info_for_irq(data->irq);
-	evtchn_port_t evtchn = info ? info->evtchn : 0;
-
-	if (VALID_EVTCHN(evtchn)) {
-		do_mask(info, EVT_MASK_REASON_EOI_PENDING);
-		event_handler_exit(info);
-	}
-}
-
-static void lateeoi_mask_ack_dynirq(struct irq_data *data)
-{
-	struct irq_info *info = info_for_irq(data->irq);
-	evtchn_port_t evtchn = info ? info->evtchn : 0;
-
-	if (VALID_EVTCHN(evtchn)) {
-		do_mask(info, EVT_MASK_REASON_EXPLICIT);
-		event_handler_exit(info);
-	}
-}
-
 static int retrigger_dynirq(struct irq_data *data)
 {
-	struct irq_info *info = info_for_irq(data->irq);
-	evtchn_port_t evtchn = info ? info->evtchn : 0;
+	unsigned int evtchn = evtchn_from_irq(data->irq);
+	int masked;
 
 	if (!VALID_EVTCHN(evtchn))
 		return 0;
 
-	do_mask(info, EVT_MASK_REASON_TEMPORARY);
+	masked = test_and_set_mask(evtchn);
 	set_evtchn(evtchn);
-	do_unmask(info, EVT_MASK_REASON_TEMPORARY);
+	if (!masked)
+		unmask_evtchn(evtchn);
 
 	return 1;
 }
@@ -1899,11 +1836,10 @@ static void restore_cpu_ipis(unsigned int cpu)
 /* Clear an irq's pending state, in preparation for polling on it */
 void xen_clear_irq_pending(int irq)
 {
-	struct irq_info *info = info_for_irq(irq);
-	evtchn_port_t evtchn = info ? info->evtchn : 0;
+	int evtchn = evtchn_from_irq(irq);
 
 	if (VALID_EVTCHN(evtchn))
-		event_handler_exit(info);
+		clear_evtchn(evtchn);
 }
 EXPORT_SYMBOL(xen_clear_irq_pending);
 void xen_set_irq_pending(int irq)
@@ -2012,8 +1948,8 @@ static struct irq_chip xen_lateeoi_chip __read_mostly = {
 	.irq_mask		= disable_dynirq,
 	.irq_unmask		= enable_dynirq,
 
-	.irq_ack		= lateeoi_ack_dynirq,
-	.irq_mask_ack		= lateeoi_mask_ack_dynirq,
+	.irq_ack		= mask_ack_dynirq,
+	.irq_mask_ack		= mask_ack_dynirq,
 
 	.irq_set_affinity	= set_affinity_irq,
 	.irq_retrigger		= retrigger_dynirq,
