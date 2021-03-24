@@ -3970,9 +3970,6 @@ static int fg_psy_get_property(struct power_supply *psy,
 	case POWER_SUPPLY_PROP_CC_STEP_SEL:
 		pval->intval = chip->ttf.cc_step.sel;
 		break;
-	case POWER_SUPPLY_PROP_FG_RESET_CLOCK:
-		pval->intval = 0;
-		break;
 	default:
 		pr_err("unsupported property %d\n", psp);
 		rc = -EINVAL;
@@ -4167,13 +4164,6 @@ static int fg_psy_set_property(struct power_supply *psy,
 			return rc;
 		}
 		break;
-	case POWER_SUPPLY_PROP_FG_RESET_CLOCK:
-		rc = fg_bcl_reset(chip);
-		if (rc < 0) {
-			pr_err("Error in resetting BCL clock, rc=%d\n", rc);
-			return rc;
-		}
-		break;
 	default:
 		break;
 	}
@@ -4271,7 +4261,6 @@ static enum power_supply_property fg_psy_props[] = {
 	POWER_SUPPLY_PROP_CONSTANT_CHARGE_VOLTAGE,
 	POWER_SUPPLY_PROP_CC_STEP,
 	POWER_SUPPLY_PROP_CC_STEP_SEL,
-	POWER_SUPPLY_PROP_FG_RESET_CLOCK,
 };
 
 static const struct power_supply_desc fg_psy_desc = {
