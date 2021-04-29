@@ -95,7 +95,7 @@ gen_toolchain(){
 	print "Cloning toolchain files..." green
 	if [ $TOOLCHAIN == "clang" ]
 	then
-		git clone --depth=1 https://github.com/kdrag0n/proton-clang clang
+		git clone --depth=1 https://github.com/Haseo97/Avalon-Clang-12.0.0 clang
 	else
 		git clone --depth=1 https://github.com/mvaisakh/gcc-arm64  -b gcc-master gcc
 		git clone --depth=1 https://github.com/mvaisakh/gcc-arm -b gcc-master gcc+
