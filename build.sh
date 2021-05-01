@@ -2,11 +2,11 @@
 
 export KERNELNAME=Phoenix
 
-export LOCALVERSION=R2.1
+export LOCALVERSION=R2.0
 
 export KBUILD_BUILD_USER=Arieffst
 
-export KBUILD_BUILD_HOST=droneci
+export KBUILD_BUILD_HOST=funproject
 
 export TOOLCHAIN=clang
 
