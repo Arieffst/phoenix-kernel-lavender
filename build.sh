@@ -2,7 +2,7 @@
 
 export KERNELNAME=Phoenix
 
-export LOCALVERSION=R2.0
+export LOCALVERSION=R2.1
 
 export KBUILD_BUILD_USER=Arieffst
 
