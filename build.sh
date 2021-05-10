@@ -8,7 +8,7 @@ export KBUILD_BUILD_USER=Arieffst
 
 export KBUILD_BUILD_HOST=#FunProject
 
-export TOOLCHAIN=gcc
+export TOOLCHAIN=clang
 
 export DEVICES=lavender
 
