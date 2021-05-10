@@ -6,9 +6,9 @@ export LOCALVERSION=R2.1
 
 export KBUILD_BUILD_USER=Arieffst
 
-export KBUILD_BUILD_HOST=funproject
+export KBUILD_BUILD_HOST=#FunProject
 
-export TOOLCHAIN=clang
+export TOOLCHAIN=gcc
 
 export DEVICES=lavender
 
