@@ -1077,7 +1077,6 @@ static int attach_to_pi_state(u32 uval, struct futex_pi_state *pi_state,
 			/*
 			 * Take a ref on the state and return success. [4]
 			 */
-			goto out_state;
 		}
 
 		/*
@@ -1105,7 +1104,6 @@ static int attach_to_pi_state(u32 uval, struct futex_pi_state *pi_state,
 	 * user space TID. [9/10]
 	 */
 	if (pid != task_pid_vnr(pi_state->owner))
-		goto out_einval;
 
 out_attach:
 	get_pi_state(pi_state);
