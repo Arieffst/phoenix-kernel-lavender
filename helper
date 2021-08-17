@@ -6,7 +6,7 @@ make_build(){
 	print "Make kernel dtb..." green
 	if [ $TOOLCHAIN == clang ]; then
 		export KBUILD_COMPILER_STRING=$(clang/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')
-		PATH="$(pwd)/clang/bin:${PATH}"
+		PATH="$TOP/tools/sdclang/linux-x86_64/bin:$PATH"
 		make O=out ARCH=arm64 $1
 		make -j$(nproc --all) O=out \
 				ARCH=arm64 \
@@ -95,7 +95,7 @@ gen_toolchain(){
 	print "Cloning toolchain files..." green
 	if [ $TOOLCHAIN == "clang" ]
 	then
-		git clone --depth=1 https://github.com/hiper25/linux-x86_google_clang12 clang
+		git clone --depth=1 https://github.com/pkm774/android-kernel-tools tools
 	else
 		git clone --depth=1 https://github.com/mvaisakh/gcc-arm64  -b gcc-master gcc
 		git clone --depth=1 https://github.com/mvaisakh/gcc-arm -b gcc-master gcc+
